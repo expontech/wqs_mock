@@ -1,119 +1,123 @@
-# WQS KVCache Mock
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 Expontech. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
 
-An in-memory, Apache-2.0-licensed mock of the WQS KVCache client library
-(`libwclient_kvcache.so`).
+# WQS mock SDK
 
-## Why this exists
+Apache-2.0 implementations of two WQS client interfaces for NIXL plugin builds
+and correctness tests:
 
-The NIXL WQSKV backend plugin in
-[ai-dynamo/nixl](https://github.com/ai-dynamo/nixl)
-(`src/plugins/wqskv/`) targets a proprietary WDS KVCache client library
-that is not publicly distributed. This mock exposes the exact same ABI
-(symbol set, function signatures, struct layouts declared in
-`kv_interface.h`) so that:
+- `libwqs_store.so` and `shared_client.h` for the current **WQS** backend using
+  `wqs::SharedClient`, `DRAM_SEG`, and `OBJ_SEG`.
+- `libwclient_kvcache.so` and `kv_interface.h` for the legacy **WQSKV** backend.
 
-- Upstream NIXL CI can build and link the WQSKV plugin against a public
-  dependency.
-- Plugin unit tests can run without a real WDS cluster.
-- Downstream consumers can develop and smoke-test against the plugin
-  before deploying with the real library.
+Both implementations store objects in process memory. They require no WQS
+cluster, wqsd, SPDK, RDMA device, or proprietary library. The two interfaces
+have independent stores; data does not survive process exit or cross process
+boundaries. This SDK is intended for functional tests, not performance testing.
 
-To use the proprietary implementation in production, install the vendor
-library to the same prefix (overwriting this mock's
-`libwclient_kvcache.so`) or place it earlier on `LD_LIBRARY_PATH`. The
-plugin code does not change.
+## Build and install
 
-## Scope
-
-Three entry points are implemented faithfully (these are the ones the NIXL
-plugin actually calls):
-
-| Function | Behavior |
-| --- | --- |
-| `wds_kvcache_init` | First call wins; idempotent thereafter. Options are accepted but otherwise ignored. |
-| `wds_kvcache_put` | Stores a copy of the iovec payload under the key. Rejects existing keys with `-EEXIST`. |
-| `wds_kvcache_get_vec` | Copies the stored value into the caller's iovec list. Requires the iovec capacity to be `>= length(stored)`; otherwise `-ENOSPC`. Missing key yields `-ENOENT`. |
-
-The remaining symbols declared in `kv_interface.h`
-(`wds_kvcache_get`, `wds_kvcache_get_str`, `wds_kvcache_batch_get`,
-`wds_kvcache_query`, `wds_block_*`, …) are stubs that report `-ENOSYS`
-through the callback. They exist so the SONAME exports the same set as
-the vendor library; the NIXL plugin does not use them.
-
-Some convenience entries (`wds_kvcache_del`, `wds_kvcache_exist_key`,
-`wds_kvcache_remove_all`) have full mock implementations because they were
-trivial and useful for test harnesses.
-
-## Semantics worth noting
-
-- **Callbacks fire asynchronously** from a worker thread pool, mirroring
-  the vendor library and exercising the consumer's wakeup paths (the
-  NIXL plugin's `pending`-counter + condition-variable design in
-  `src/plugins/wqskv/wqskv_backend.cpp`).
-  - `wds_kvcache_init` spawns `max(1, opts.thread_num)` worker threads.
-  - `opts.thread_mode` is accepted but workers always block on a
-    condition variable; a pure-spin POLL mode is intentionally not
-    modeled.
-  - Operations that are accepted return `0` and report final status
-    later via the callback.
-  - Operations rejected up front (null cb, library not initialized,
-    unsupported entry point) return a non-zero rc and never fire the
-    callback. This matches the contract "rc != 0 means no callback".
-- **Caller lifetime contract**: for `put`, the iovec.iov_base buffers
-  must stay readable until the callback fires. For `get_vec`, both the
-  `value` vector reference and its iov_base buffers must stay valid
-  until the callback fires. The NIXL plugin holds the request handle
-  alive until its pending counter reaches zero, which satisfies this.
-- **Storage is in-process** and lives in a function-local `static`. It
-  does not survive process exit and is not shared between processes.
-- **Concurrency**: one global `std::mutex` serializes all KV-store
-  accesses; the dispatch queue has its own mutex. This is deliberate
-  for clarity; the mock is intended for correctness testing, not
-  throughput.
-- **Shutdown**: worker threads are joined from an `atexit` handler so
-  the library unloads cleanly on normal process exit.
-
-## Build & install
-
-Requires a C++17 compiler and CMake ≥ 3.13.
+Requires Linux, a C++17 compiler, CMake 3.13 or newer, and POSIX threads.
 
 ```bash
-git clone https://github.com/<owner>/wqs-mock.git
-cd wqs-mock
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local ..
-make -j
-sudo make install
-sudo ldconfig
+git clone https://github.com/expontech/wqs_mock.git
+cd wqs_mock
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/path/to/wqs-mock \
+  -DCMAKE_INSTALL_LIBDIR=lib
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+cmake --install build
 ```
 
-This installs:
+The default build installs both libraries and their public headers. Use
+`-DWQS_MOCK_BUILD_LEGACY=OFF` to install only `libwqs_store.so`, `shared_client.h`,
+and `pyclient.h`. `WQS_MOCK_BUILD_TESTS` defaults to `ON`.
 
-- `${prefix}/lib/libwclient_kvcache.so` (versioned, `SOVERSION=0`)
-- `${prefix}/include/kv_interface.h`
+`libwqs_store.so` has an unversioned SONAME matching the SDK name consumed by
+NIXL. The legacy library retains `SOVERSION=0`. No production sources or
+proprietary binaries are downloaded or bundled.
 
-After installing, NIXL's `meson setup` discovers the mock through its
-normal `find_library('wclient_kvcache')` and pkg-config lookups; the
-`-Dwqskv_lib_path` / `-Dwqskv_inc_path` options are not required when the
-mock is installed to a default prefix.
+## SharedClient interface
 
-## Smoke test
+Include `<shared_client.h>` and link with `-lwqs_store`.
 
-Configure with `-DWQS_MOCK_BUILD_TESTS=ON` (the default) and run
-`ctest` from the build directory. Six basic checks cover put/get
-round-trip, overwrite rejection, missing-key reads, short-buffer reads,
-delete + existence, and the `-ENOSYS` stubs.
+| Method | Mock behavior |
+| --- | --- |
+| `setup(...)` | Succeeds once per client; repeated setup returns `-EINVAL`. Connection parameters are accepted but no connection is opened. |
+| `register_buffer_with_fd(buffer, bytes, fd)` | Registers one caller-owned range after setup. Checks the pointer, length, and backing file descriptor; success returns `0`. |
+| `getSize(key)` | Returns the stored positive logical length, `0` for a miss, or a negative result before setup. |
+| `batch_put_from(keys, buffers, sizes)` | Copies each value from the registered range. Returns one `0` per object on success or all `-1` for an invalid batch. |
+| `batch_get_into(keys, buffers, sizes)` | Copies each hit into the registered range and returns its actual byte count. A missing key or wrong logical length returns `0` for that entry without copying. |
+| `put_from` / `get_into` | Single-object wrappers; WRITE success is `0`, READ success is the positive byte count. |
+| `isExist` / `batchIsExist` | Return `1` for a positive-size object and `0` otherwise, preserving input order. |
+| `put` / `put_batch` | Convenience wrappers for iovec-based writes. |
 
-## Relationship to the vendor library
+All SharedClient data calls complete synchronously, as in the SDK wrapper.
+Objects are shared across SharedClient instances within one process. A mutex
+serializes accesses, including registration state. Writes replace existing
+values, so size queries observe the latest write. Applications must enforce
+the NIXL WQS backend's immutable-key contract themselves.
 
-This mock describes the public surface of the WQS KVCache client ABI but
-not its implementation. Schema, threading, distribution, RDMA, persistence,
-mempool behavior, NUMA pinning, security, and performance characteristics
-of the production library are all out of scope and behave as no-ops here.
+The caller owns the registered mapping and file descriptor. The mock neither
+maps, unmaps, closes, nor duplicates them; keep them alive while using the client.
+An ordinary memfd works for SDK tests. SDK tests exercise invalid registrations,
+unaligned payloads, incorrect lengths, mixed-hit batches, and concurrent clients.
 
-For real-world deployments, replace `libwclient_kvcache.so` with the
-vendor build that implements those properties.
+Reads require the exact stored logical length, even if the destination could
+hold more bytes. This deliberately catches consumers that omit the size query.
+Invalid vector lengths or registered ranges reject the entire batch before any
+copy. Storage allocation failures may throw standard C++ allocation exceptions.
+
+The headers retain the `PyClient` virtual method order and `SharedClient` object
+layout used by the current SDK. Buffer-handle types are opaque. Unimplemented
+integer-returning methods, including unregister, removal, teardown, and metadata
+writes, return `-ENOSYS`; buffer-handle methods return an empty vector. Do not
+infer production support from these declarations. C++ ABI compatibility depends
+on the SDK version, compiler, and standard library; rebuild production consumers
+against their production SDK.
+
+## Build the NIXL WQS plugin
+
+With a NIXL checkout containing `src/plugins/wqs`, configure its normal Meson
+options to use this installation:
+
+```bash
+meson setup build-wqs-tests --buildtype=debug \
+  -Denable_plugins=WQS -Dbuild_tests=true \
+  -Dwqs_inc_path=/path/to/wqs-mock/include \
+  -Dwqs_lib_path=/path/to/wqs-mock/lib
+meson compile -C build-wqs-tests wqs_unit
+meson test -C build-wqs-tests --no-rebuild --suite wqs --print-errorlogs
+```
+
+These injected-client plugin unit tests need neither hugepages nor wqsd. To run
+NIXL transfers through the production session and this mock, NIXL still allocates
+its hugepage-backed staging pool. Reserve 2 MiB hugepages for that pool; the mock
+does not change NIXL's allocation policy. Make the mock library available through
+the runtime loader's search paths. Production deployments must use the real SDK.
+
+## Legacy KVCache interface
+
+The legacy WQSKV plugin uses `libwclient_kvcache.so` and `kv_interface.h`.
+Its API and callback behavior remain available when `WQS_MOCK_BUILD_LEGACY=ON`:
+
+- `wds_kvcache_init` initializes a worker pool once per process.
+- `wds_kvcache_put` copies iovecs into the store and rejects existing keys with
+  `-EEXIST`.
+- `wds_kvcache_get_vec` requires capacity at least as large as the stored value;
+  misses return `-ENOENT` and short buffers return `-ENOSPC`.
+- Delete, existence, and remove-all helpers are implemented. Other entries
+  return `-ENOSYS` synchronously without invoking a callback.
+
+Accepted operations return `0` and deliver their result asynchronously from a
+worker thread. A nonzero submission result means no callback will arrive. The
+caller must retain iovec containers and buffers until completion. The global
+store and dispatch queue are protected by separate mutexes; workers are joined
+on normal process exit. The legacy smoke test covers this contract.
 
 ## License
 
-Apache License 2.0. See `LICENSE`.
+Apache License 2.0. See [LICENSE](LICENSE).
