@@ -3,8 +3,8 @@
 
 cmake_minimum_required(VERSION 3.13)
 project(wqs-mock
-    VERSION 0.1.0
-    DESCRIPTION "In-memory Apache-2.0 mock of the WQS KVCache client ABI"
+    VERSION 0.2.0
+    DESCRIPTION "In-memory mocks of the WQS SharedClient SDK and legacy KVCache ABI"
     LANGUAGES CXX
 )
 
@@ -21,28 +21,28 @@ endif()
 # Library
 # ----------------------------------------------------------------------------
 
-add_library(wclient_kvcache SHARED
-    src/wclient_kvcache_mock.cpp
-)
+find_package(Threads REQUIRED)
+add_library(wqs_store SHARED src/shared_client_mock.cpp)
+set(mock_targets wqs_store)
 
-target_include_directories(wclient_kvcache
-    PUBLIC
+option(WQS_MOCK_BUILD_LEGACY "Build the legacy libwclient_kvcache mock" ON)
+if(WQS_MOCK_BUILD_LEGACY)
+    add_library(wclient_kvcache SHARED src/wclient_kvcache_mock.cpp)
+    set_target_properties(wclient_kvcache PROPERTIES
+        VERSION ${PROJECT_VERSION}
+        SOVERSION 0
+    )
+    list(APPEND mock_targets wclient_kvcache)
+endif()
+
+foreach(target IN LISTS mock_targets)
+    target_include_directories(${target} PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
-)
-
-find_package(Threads REQUIRED)
-target_link_libraries(wclient_kvcache PUBLIC Threads::Threads)
-
-set_target_properties(wclient_kvcache PROPERTIES
-    VERSION   ${PROJECT_VERSION}
-    SOVERSION 0
-    OUTPUT_NAME wclient_kvcache
-)
-
-target_compile_options(wclient_kvcache PRIVATE
-    -Wall -Wextra -Wpedantic
-)
+    )
+    target_link_libraries(${target} PUBLIC Threads::Threads)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+endforeach()
 
 # ----------------------------------------------------------------------------
 # Install
@@ -50,15 +50,19 @@ target_compile_options(wclient_kvcache PRIVATE
 
 include(GNUInstallDirs)
 
-install(TARGETS wclient_kvcache
+install(TARGETS ${mock_targets}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(FILES include/kv_interface.h
+install(FILES include/shared_client.h include/pyclient.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+if(WQS_MOCK_BUILD_LEGACY)
+    install(FILES include/kv_interface.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/wqs-mock)
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -67,7 +71,14 @@ install(FILES include/kv_interface.h
 option(WQS_MOCK_BUILD_TESTS "Build the mock smoke test" ON)
 if(WQS_MOCK_BUILD_TESTS)
     enable_testing()
-    add_executable(wqs_mock_smoke tests/smoke.cpp)
-    target_link_libraries(wqs_mock_smoke PRIVATE wclient_kvcache)
-    add_test(NAME wqs_mock_smoke COMMAND wqs_mock_smoke)
+    add_executable(wqs_shared_client_smoke tests/shared_client_smoke.cpp)
+    target_link_libraries(wqs_shared_client_smoke PRIVATE wqs_store)
+    add_test(NAME wqs_shared_client_smoke COMMAND wqs_shared_client_smoke)
+    set_tests_properties(wqs_shared_client_smoke PROPERTIES TIMEOUT 30)
+    if(WQS_MOCK_BUILD_LEGACY)
+        add_executable(wqs_mock_smoke tests/smoke.cpp)
+        target_link_libraries(wqs_mock_smoke PRIVATE wclient_kvcache)
+        add_test(NAME wqs_mock_smoke COMMAND wqs_mock_smoke)
+        set_tests_properties(wqs_mock_smoke PROPERTIES TIMEOUT 30)
+    endif()
 endif()

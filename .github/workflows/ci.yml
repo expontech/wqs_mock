@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Expontech. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Mock SDK checks
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        legacy: ["ON", "OFF"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS=-Werror \
+            -DWQS_MOCK_BUILD_LEGACY=${{ matrix.legacy }}
+          cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Install
+        run: cmake --install build --prefix "$RUNNER_TEMP/wqs-mock"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wqs-mock-sdk-legacy-${{ matrix.legacy }}
+          path: ${{ runner.temp }}/wqs-mock
