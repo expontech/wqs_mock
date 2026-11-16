@@ -37,6 +37,8 @@ public:
     batchIsExist(const std::vector<std::string> &keys) override;
     int64_t
     getSize(const std::string &key) override;
+    size_t
+    get_payload_capacity() const noexcept;
     int
     register_buffer(void *buffer, size_t size) override;
     int
