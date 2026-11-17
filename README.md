@@ -47,6 +47,7 @@ Include `<shared_client.h>` and link with `-lwqs_store`.
 | Method | Mock behavior |
 | --- | --- |
 | `setup(...)` | Succeeds once per client; repeated setup returns `-EINVAL`. Connection parameters are accepted but no connection is opened. |
+| `get_payload_capacity()` | Returns `0` before setup and a fixed metadata capacity of `8192` bytes after setup. |
 | `register_buffer_with_fd(buffer, bytes, fd)` | Registers one caller-owned range after setup. Checks the pointer, length, and backing file descriptor; success returns `0`. |
 | `getSize(key)` | Returns the stored positive logical length, `0` for a miss, or a negative result before setup. |
 | `batch_put_from(keys, buffers, sizes)` | Copies each value from the registered range. Returns one `0` per object on success or all `-1` for an invalid batch. |

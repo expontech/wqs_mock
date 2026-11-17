@@ -34,6 +34,11 @@ SharedClient::SharedClient() : impl_(std::make_unique<Impl>()) {}
 
 SharedClient::~SharedClient() = default;
 
+size_t
+SharedClient::get_payload_capacity() const noexcept {
+    return has_inited_ ? 8192 : 0;
+}
+
 int
 SharedClient::setup(const std::string &,
                     const std::string &,

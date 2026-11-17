@@ -65,10 +65,12 @@ void
 checkRegistrationAndRoundTrip() {
     Region region;
     wqs::SharedClient client;
+    require(client.get_payload_capacity() == 0, "capacity unavailable before setup");
     require(client.getSize("missing") < 0, "use before setup must fail");
     require(client.register_buffer_with_fd(region.data, region.size, region.fd) < 0,
             "registration before setup must fail");
     require(client.setup("", "") == 0, "setup");
+    require(client.get_payload_capacity() == 8192, "configured payload capacity");
     require(client.setup("", "") == -EINVAL, "repeated setup must fail");
     require(client.register_buffer_with_fd(region.data, region.size, -1) < 0, "invalid fd");
     require(client.register_buffer_with_fd(nullptr, region.size, region.fd) < 0, "null region");
